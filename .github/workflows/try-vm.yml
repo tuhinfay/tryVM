@@ -22,7 +22,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip oci
+
       - name: Try VM launch
+        id: vm
         env:
           OCI_REGION: ap-singapore-1
           OCI_TENANCY: ${{ secrets.OCI_TENANCY }}
@@ -34,4 +36,49 @@ jobs:
           OCI_SSH_KEY: ${{ secrets.OCI_SSH_KEY }}
           OCI_AD: FqdA:AP-SINGAPORE-1-AD-1
           VM_NAME: Tuhinpc-Final-VM
-        run: python launch_vm.py
+        run: |
+          set +e
+          python launch_vm.py | tee vm-result.txt
+          rc=$?
+          event=$(grep -E '^(SUCCESS|VM_EXISTS|CAPACITY_UNAVAILABLE|OCI_ERROR)' vm-result.txt | tail -1 || true)
+          echo "event=$event" >> "$GITHUB_OUTPUT"
+          exit $rc
+
+      - name: Notify Telegram on successful launch
+        if: always() && startsWith(steps.vm.outputs.event, 'SUCCESS|')
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import os, urllib.parse, urllib.request
+          text = """🟢 Oracle VM launched successfully!
+
+          VM: Tuhinpc-Final-VM
+          Region: Singapore
+          Shape: VM.Standard.A1.Flex
+          OCPU: 1
+          RAM: 1 GB
+
+          GitHub Actions accepted the launch request."""
+          url = "https://api.telegram.org/bot" + os.environ["TELEGRAM_BOT_TOKEN"] + "/sendMessage"
+          data = urllib.parse.urlencode({"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text}).encode()
+          urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20).read()
+          PY
+
+      - name: Notify Telegram on unexpected OCI error
+        if: always() && startsWith(steps.vm.outputs.event, 'OCI_ERROR|')
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          VM_EVENT: ${{ steps.vm.outputs.event }}
+        run: |
+          python - <<'PY'
+          import os, urllib.parse, urllib.request
+          url = "https://api.telegram.org/bot" + os.environ["TELEGRAM_BOT_TOKEN"] + "/sendMessage"
+          data = urllib.parse.urlencode({
+              "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+              "text": "🔴 Oracle VM launch error\n\n" + os.environ["VM_EVENT"]
+          }).encode()
+          urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20).read()
+          PY

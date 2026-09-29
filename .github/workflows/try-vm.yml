@@ -39,10 +39,19 @@ jobs:
         run: |
           set +e
           python launch_vm.py | tee vm-result.txt
-          rc=$?
+          rc=${PIPESTATUS[0]}
           event=$(grep -E '^(SUCCESS|VM_EXISTS|CAPACITY_UNAVAILABLE|OCI_ERROR)' vm-result.txt | tail -1 || true)
           echo "event=$event" >> "$GITHUB_OUTPUT"
-          exit $rc
+
+          # Oracle A1 Flex capacity shortages are expected during retry.
+          # Treat them as a successful workflow run so the schedule keeps retrying
+          # without showing a red/failed Actions run.
+          if [ "$rc" -eq 2 ] && [ "$event" = "CAPACITY_UNAVAILABLE" ]; then
+            echo "Oracle A1 Flex capacity unavailable. Retry will continue on the next scheduled run."
+            exit 0
+          fi
+
+          exit "$rc"
 
       - name: Notify Telegram on successful launch
         if: always() && startsWith(steps.vm.outputs.event, 'SUCCESS|')

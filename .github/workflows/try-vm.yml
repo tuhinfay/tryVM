@@ -2,6 +2,11 @@ name: Oracle VM Auto Retry
 
 on:
   workflow_dispatch:
+    inputs:
+      manual_run:
+        description: "Run Oracle VM capacity check now"
+        required: false
+        default: "yes"
   schedule:
     - cron: "*/5 * * * *"
 

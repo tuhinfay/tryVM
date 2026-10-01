@@ -69,7 +69,7 @@ jobs:
           text+="🟢 Successful launch detections: $success_count%0A"
           text+="ℹ️ Existing-VM detections: $vm_exists_count%0A%0A"
           text+="$status%0A"
-          text+="Schedule: every 5 minutes + 5 attempts per run, with increasing delays: 45s, 60s, 120s, 300s."
+          text+="Schedule: Bangladesh time 00:00-05:00 hourly, 06:00-22:00 every 2 hours. Each run makes up to 30 attempts with 60 seconds between attempts."
 
           export SUMMARY_TEXT="$text"
 

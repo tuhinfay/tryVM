@@ -3,7 +3,7 @@ name: Oracle VM Auto Retry
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
 
 concurrency:
   group: oracle-vm-launch
@@ -23,7 +23,7 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip oci
 
-      - name: Try VM launch
+      - name: Try VM launch with rapid retries
         id: vm
         env:
           OCI_REGION: ap-singapore-1
@@ -38,16 +38,37 @@ jobs:
           VM_NAME: Tuhinpc-Final-VM
         run: |
           set +e
-          python launch_vm.py | tee vm-result.txt
-          rc=${PIPESTATUS[0]}
-          event=$(grep -E '^(SUCCESS|VM_EXISTS|CAPACITY_UNAVAILABLE|OCI_ERROR)' vm-result.txt | tail -1 || true)
-          echo "event=$event" >> "$GITHUB_OUTPUT"
+          attempts=0
+          event=""
+          rc=2
 
-          # Oracle A1 Flex capacity shortages are expected during retry.
-          # Treat them as a successful workflow run so the schedule keeps retrying
-          # without showing a red/failed Actions run.
+          for i in 1 2 3 4 5; do
+            attempts=$i
+            echo "===== Attempt $i/5 ====="
+            python launch_vm.py | tee vm-result.txt
+            rc=${PIPESTATUS[0]}
+            event=$(grep -E '^(SUCCESS|VM_EXISTS|CAPACITY_UNAVAILABLE|OCI_ERROR)' vm-result.txt | tail -1 || true)
+
+            if [ "$rc" -eq 0 ]; then
+              break
+            fi
+
+            if [ "$rc" -eq 2 ] && [ "$event" = "CAPACITY_UNAVAILABLE" ]; then
+              if [ "$i" -lt 5 ]; then
+                echo "Capacity unavailable. Retrying in 45 seconds..."
+                sleep 45
+              fi
+              continue
+            fi
+
+            break
+          done
+
+          echo "event=$event" >> "$GITHUB_OUTPUT"
+          echo "attempts=$attempts" >> "$GITHUB_OUTPUT"
+
           if [ "$rc" -eq 2 ] && [ "$event" = "CAPACITY_UNAVAILABLE" ]; then
-            echo "Oracle A1 Flex capacity unavailable. Retry will continue on the next scheduled run."
+            echo "Oracle A1 Flex capacity unavailable after $attempts attempts. Next scheduled run will retry."
             exit 0
           fi
 
@@ -58,18 +79,20 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ATTEMPTS: ${{ steps.vm.outputs.attempts }}
         run: |
           python - <<'PY'
           import os, urllib.parse, urllib.request
-          text = """🟢 Oracle VM launched successfully!
+          text = f"""🟢 Oracle VM launched successfully!
 
-          VM: Tuhinpc-Final-VM
-          Region: Singapore
-          Shape: VM.Standard.A1.Flex
-          OCPU: 1
-          RAM: 1 GB
+VM: Tuhinpc-Final-VM
+Region: Singapore
+Shape: VM.Standard.A1.Flex
+OCPU: 1
+RAM: 1 GB
+Attempts in this run: {os.environ.get("ATTEMPTS","unknown")}
 
-          GitHub Actions accepted the launch request."""
+GitHub Actions accepted the launch request."""
           url = "https://api.telegram.org/bot" + os.environ["TELEGRAM_BOT_TOKEN"] + "/sendMessage"
           data = urllib.parse.urlencode({"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text}).encode()
           urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20).read()
@@ -81,13 +104,12 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           VM_EVENT: ${{ steps.vm.outputs.event }}
+          ATTEMPTS: ${{ steps.vm.outputs.attempts }}
         run: |
           python - <<'PY'
           import os, urllib.parse, urllib.request
           url = "https://api.telegram.org/bot" + os.environ["TELEGRAM_BOT_TOKEN"] + "/sendMessage"
-          data = urllib.parse.urlencode({
-              "chat_id": os.environ["TELEGRAM_CHAT_ID"],
-              "text": "🔴 Oracle VM launch error\n\n" + os.environ["VM_EVENT"]
-          }).encode()
+          text = "🔴 Oracle VM launch error\n\n" + os.environ["VM_EVENT"] + "\nAttempts: " + os.environ.get("ATTEMPTS","unknown")
+          data = urllib.parse.urlencode({"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text}).encode()
           urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20).read()
           PY

@@ -16,6 +16,7 @@ jobs:
   launch:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     steps:
       - uses: actions/checkout@v4
 
@@ -42,15 +43,19 @@ jobs:
         shell: bash
         run: |
           set +e
+
           attempts=0
           event=""
           rc=3
 
           for i in 1 2 3 4 5; do
             attempts=$i
+
             echo "===== Oracle VM attempt $i/5 ====="
+
             python launch_vm.py > vm-result.txt 2>&1
             rc=$?
+
             cat vm-result.txt
 
             event=$(grep -E '^(SUCCESS|VM_EXISTS|CAPACITY_UNAVAILABLE|OCI_ERROR)' vm-result.txt | tail -1 || true)
@@ -60,18 +65,31 @@ jobs:
             fi
 
             if [ "$event" = "CAPACITY_UNAVAILABLE" ]; then
+
               case "$i" in
-                1) delay=45 ;;
-                2) delay=60 ;;
-                3) delay=120 ;;
-                4) delay=300 ;;
-                *) delay=0 ;;
+                1)
+                  delay=45
+                  ;;
+                2)
+                  delay=60
+                  ;;
+                3)
+                  delay=120
+                  ;;
+                4)
+                  delay=300
+                  ;;
+                *)
+                  delay=0
+                  ;;
               esac
 
               if [ "$delay" -gt 0 ]; then
-                echo "Oracle A1 Flex capacity unavailable. Waiting $delay seconds before attempt $((i+1))/5..."
+                echo "Oracle A1 Flex capacity unavailable."
+                echo "Waiting $delay seconds before attempt $((i+1))/5..."
                 sleep "$delay"
               fi
+
               continue
             fi
 
@@ -83,7 +101,8 @@ jobs:
           echo "attempts=$attempts" >> "$GITHUB_OUTPUT"
 
           if [ "$event" = "CAPACITY_UNAVAILABLE" ]; then
-            echo "Oracle A1 Flex capacity unavailable after $attempts attempts. Next scheduled run will try again."
+            echo "Oracle A1 Flex capacity unavailable after $attempts attempts."
+            echo "Next scheduled run will try again."
             exit 0
           fi
 
@@ -97,7 +116,10 @@ jobs:
           ATTEMPTS: ${{ steps.vm.outputs.attempts }}
         run: |
           python - <<'PY'
-          import os, urllib.parse, urllib.request
+          import os
+          import urllib.parse
+          import urllib.request
+
           text = f"""🟢 Oracle VM launched successfully!
 
 VM: Tuhinpc-Final-VM
@@ -107,9 +129,21 @@ OCPU: 1
 RAM: 1 GB
 Attempts: {os.environ.get("ATTEMPTS", "unknown")}"""
 
-          url = "https://api.telegram.org/bot" + os.environ["TELEGRAM_BOT_TOKEN"] + "/sendMessage"
-          data = urllib.parse.urlencode({"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text}).encode()
-          urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20).read()
+          url = (
+              "https://api.telegram.org/bot"
+              + os.environ["TELEGRAM_BOT_TOKEN"]
+              + "/sendMessage"
+          )
+
+          data = urllib.parse.urlencode({
+              "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+              "text": text
+          }).encode()
+
+          urllib.request.urlopen(
+              urllib.request.Request(url, data=data),
+              timeout=20
+          ).read()
           PY
 
       - name: Notify Telegram on unexpected OCI error
@@ -121,9 +155,30 @@ Attempts: {os.environ.get("ATTEMPTS", "unknown")}"""
           ATTEMPTS: ${{ steps.vm.outputs.attempts }}
         run: |
           python - <<'PY'
-          import os, urllib.parse, urllib.request
-          url = "https://api.telegram.org/bot" + os.environ["TELEGRAM_BOT_TOKEN"] + "/sendMessage"
-          text = "🔴 Oracle VM launch error\n\n" + os.environ["VM_EVENT"] + "\nAttempts: " + os.environ.get("ATTEMPTS", "unknown")
-          data = urllib.parse.urlencode({"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text}).encode()
-          urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20).read()
+          import os
+          import urllib.parse
+          import urllib.request
+
+          url = (
+              "https://api.telegram.org/bot"
+              + os.environ["TELEGRAM_BOT_TOKEN"]
+              + "/sendMessage"
+          )
+
+          text = (
+              "🔴 Oracle VM launch error\n\n"
+              + os.environ["VM_EVENT"]
+              + "\nAttempts: "
+              + os.environ.get("ATTEMPTS", "unknown")
+          )
+
+          data = urllib.parse.urlencode({
+              "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+              "text": text
+          }).encode()
+
+          urllib.request.urlopen(
+              urllib.request.Request(url, data=data),
+              timeout=20
+          ).read()
           PY

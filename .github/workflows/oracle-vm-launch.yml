@@ -1,4 +1,4 @@
-name: Oracle VM Launch
+name: Oracle VM Auto Retry
 
 on:
   workflow_dispatch:

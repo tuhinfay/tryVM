@@ -3,11 +3,11 @@ name: Oracle VM Auto Retry
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/10 * * * *"
 
 concurrency:
   group: oracle-vm-launch
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -18,16 +18,20 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install OCI SDK
-        run: python -m pip install --upgrade pip oci
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install oci
 
-      - name: Check VM / retry Oracle A1 Flex launch
+      - name: Try Oracle VM
         id: vm
         env:
           OCI_REGION: ap-singapore-1
@@ -40,7 +44,9 @@ jobs:
           OCI_SSH_KEY: ${{ secrets.OCI_SSH_KEY }}
           OCI_AD: FqdA:AP-SINGAPORE-1-AD-1
           VM_NAME: Tuhinpc-Final-VM
+
         shell: bash
+
         run: |
           set +e
 
@@ -48,10 +54,14 @@ jobs:
           event=""
           rc=3
 
-          for i in 1 2 3 4 5; do
+          for i in 1 2 3 4 5
+          do
             attempts=$i
 
-            echo "===== Oracle VM attempt $i/5 ====="
+            echo ""
+            echo "========================================"
+            echo "Oracle VM Attempt $i/5"
+            echo "========================================"
 
             python launch_vm.py > vm-result.txt 2>&1
             rc=$?
@@ -60,7 +70,12 @@ jobs:
 
             event=$(grep -E '^(SUCCESS|VM_EXISTS|CAPACITY_UNAVAILABLE|OCI_ERROR)' vm-result.txt | tail -1 || true)
 
+            echo ""
+            echo "Detected event: $event"
+            echo "Exit code: $rc"
+
             if [ "$rc" -eq 0 ]; then
+              echo "VM operation completed successfully."
               break
             fi
 
@@ -68,32 +83,35 @@ jobs:
 
               case "$i" in
                 1)
-                  delay=45
-                  ;;
-                2)
                   delay=60
                   ;;
-                3)
+                2)
                   delay=120
+                  ;;
+                3)
+                  delay=180
                   ;;
                 4)
                   delay=300
                   ;;
-                *)
+                5)
                   delay=0
                   ;;
               esac
 
               if [ "$delay" -gt 0 ]; then
-                echo "Oracle A1 Flex capacity unavailable."
-                echo "Waiting $delay seconds before attempt $((i+1))/5..."
+                echo ""
+                echo "Oracle A1 Flex host capacity unavailable."
+                echo "Waiting $delay seconds before next attempt..."
                 sleep "$delay"
               fi
 
               continue
             fi
 
-            echo "Unexpected OCI error. Stopping retries."
+            echo ""
+            echo "Unexpected OCI error."
+            echo "Stopping retry loop."
             break
           done
 
@@ -101,19 +119,33 @@ jobs:
           echo "attempts=$attempts" >> "$GITHUB_OUTPUT"
 
           if [ "$event" = "CAPACITY_UNAVAILABLE" ]; then
-            echo "Oracle A1 Flex capacity unavailable after $attempts attempts."
+            echo ""
+            echo "========================================"
+            echo "No Oracle A1 Flex capacity found."
+            echo "Attempts completed: $attempts"
+            echo "Workflow will remain GREEN."
             echo "Next scheduled run will try again."
+            echo "========================================"
+            exit 0
+          fi
+
+          if [[ "$event" == SUCCESS\|* ]]; then
+            exit 0
+          fi
+
+          if [ "$event" = "VM_EXISTS" ]; then
             exit 0
           fi
 
           exit "$rc"
 
-      - name: Notify Telegram on successful launch
+      - name: Telegram Success Notification
         if: startsWith(steps.vm.outputs.event, 'SUCCESS|')
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ATTEMPTS: ${{ steps.vm.outputs.attempts }}
+
         run: |
           python - <<'PY'
           import os
@@ -146,13 +178,14 @@ Attempts: {os.environ.get("ATTEMPTS", "unknown")}"""
           ).read()
           PY
 
-      - name: Notify Telegram on unexpected OCI error
+      - name: Telegram OCI Error Notification
         if: startsWith(steps.vm.outputs.event, 'OCI_ERROR|')
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           VM_EVENT: ${{ steps.vm.outputs.event }}
           ATTEMPTS: ${{ steps.vm.outputs.attempts }}
+
         run: |
           python - <<'PY'
           import os

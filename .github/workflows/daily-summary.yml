@@ -42,7 +42,7 @@ jobs:
             run_count=$((run_count + 1))
             log=$(gh run view "$id" --repo "${GITHUB_REPOSITORY}" --log 2>/dev/null || true)
 
-            n=$(printf '%s\n' "$log" | grep -c '===== Attempt ' || true)
+            n=$(printf '%s\n' "$log" | grep -c '===== Oracle VM attempt ' || true)
             attempt_count=$((attempt_count + n))
 
             c=$(printf '%s\n' "$log" | grep -c 'CAPACITY_UNAVAILABLE' || true)
@@ -69,7 +69,7 @@ jobs:
           text+="🟢 Successful launch detections: $success_count%0A"
           text+="ℹ️ Existing-VM detections: $vm_exists_count%0A%0A"
           text+="$status%0A"
-          text+="Schedule: every 5 minutes + 5 attempts per run, 45 seconds apart."
+          text+="Schedule: every 5 minutes + 5 attempts per run, with increasing delays: 45s, 60s, 120s, 300s."
 
           export SUMMARY_TEXT="$text"
 

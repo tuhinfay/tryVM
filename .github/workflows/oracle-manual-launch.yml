@@ -1,7 +1,13 @@
-name: Oracle VM Manual Launch
+name: Oracle VM Auto Retry
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+concurrency:
+  group: oracle-vm-launch
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -9,15 +15,19 @@ permissions:
 jobs:
   launch:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install OCI SDK
         run: python -m pip install --upgrade pip oci
-      - name: Launch Oracle VM
+
+      - name: Check VM / retry Oracle A1 Flex launch
+        id: vm
         env:
           OCI_REGION: ap-singapore-1
           OCI_TENANCY: ${{ secrets.OCI_TENANCY }}
@@ -29,16 +39,91 @@ jobs:
           OCI_SSH_KEY: ${{ secrets.OCI_SSH_KEY }}
           OCI_AD: FqdA:AP-SINGAPORE-1-AD-1
           VM_NAME: Tuhinpc-Final-VM
+        shell: bash
         run: |
           set +e
+          attempts=0
+          event=""
+          rc=3
+
           for i in 1 2 3 4 5; do
+            attempts=$i
             echo "===== Oracle VM attempt $i/5 ====="
-            python launch_vm.py
+            python launch_vm.py > vm-result.txt 2>&1
             rc=$?
-            if [ "$rc" -eq 0 ]; then exit 0; fi
-            if [ "$rc" -eq 2 ] && [ "$i" -lt 5 ]; then
-              sleep 45
+            cat vm-result.txt
+
+            event=$(grep -E '^(SUCCESS|VM_EXISTS|CAPACITY_UNAVAILABLE|OCI_ERROR)' vm-result.txt | tail -1 || true)
+
+            if [ "$rc" -eq 0 ]; then
+              break
+            fi
+
+            if [ "$event" = "CAPACITY_UNAVAILABLE" ]; then
+              case "$i" in
+                1) delay=45 ;;
+                2) delay=60 ;;
+                3) delay=120 ;;
+                4) delay=300 ;;
+                *) delay=0 ;;
+              esac
+
+              if [ "$delay" -gt 0 ]; then
+                echo "Oracle A1 Flex capacity unavailable. Waiting $delay seconds before attempt $((i+1))/5..."
+                sleep "$delay"
+              fi
               continue
             fi
-            exit "$rc"
+
+            echo "Unexpected OCI error. Stopping retries."
+            break
           done
+
+          echo "event=$event" >> "$GITHUB_OUTPUT"
+          echo "attempts=$attempts" >> "$GITHUB_OUTPUT"
+
+          if [ "$event" = "CAPACITY_UNAVAILABLE" ]; then
+            echo "Oracle A1 Flex capacity unavailable after $attempts attempts. Next scheduled run will try again."
+            exit 0
+          fi
+
+          exit "$rc"
+
+      - name: Notify Telegram on successful launch
+        if: startsWith(steps.vm.outputs.event, 'SUCCESS|')
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ATTEMPTS: ${{ steps.vm.outputs.attempts }}
+        run: |
+          python - <<'PY'
+          import os, urllib.parse, urllib.request
+          text = f"""🟢 Oracle VM launched successfully!
+
+VM: Tuhinpc-Final-VM
+Region: Singapore
+Shape: VM.Standard.A1.Flex
+OCPU: 1
+RAM: 1 GB
+Attempts: {os.environ.get("ATTEMPTS", "unknown")}"""
+
+          url = "https://api.telegram.org/bot" + os.environ["TELEGRAM_BOT_TOKEN"] + "/sendMessage"
+          data = urllib.parse.urlencode({"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text}).encode()
+          urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20).read()
+          PY
+
+      - name: Notify Telegram on unexpected OCI error
+        if: startsWith(steps.vm.outputs.event, 'OCI_ERROR|')
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          VM_EVENT: ${{ steps.vm.outputs.event }}
+          ATTEMPTS: ${{ steps.vm.outputs.attempts }}
+        run: |
+          python - <<'PY'
+          import os, urllib.parse, urllib.request
+          url = "https://api.telegram.org/bot" + os.environ["TELEGRAM_BOT_TOKEN"] + "/sendMessage"
+          text = "🔴 Oracle VM launch error\n\n" + os.environ["VM_EVENT"] + "\nAttempts: " + os.environ.get("ATTEMPTS", "unknown")
+          data = urllib.parse.urlencode({"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text}).encode()
+          urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20).read()
+          PY

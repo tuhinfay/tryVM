@@ -1,0 +1,80 @@
+name: Oracle VM Daily Summary
+
+on:
+  schedule:
+    - cron: "55 17 * * *"
+      timezone: "Asia/Dhaka"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  summary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Build and send daily Telegram summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -e
+          TODAY=$(TZ=Asia/Dhaka date +%Y-%m-%d)
+
+          runs_json=$(gh run list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --workflow "Oracle VM Auto Retry" \
+            --limit 100 \
+            --json databaseId,status,conclusion,createdAt)
+
+          ids=$(echo "$runs_json" | jq -r --arg today "$TODAY" '.[] | select(.createdAt | startswith($today)) | .databaseId')
+
+          run_count=0
+          attempt_count=0
+          capacity_count=0
+          success_count=0
+          vm_exists_count=0
+
+          for id in $ids; do
+            run_count=$((run_count + 1))
+            log=$(gh run view "$id" --repo "${GITHUB_REPOSITORY}" --log 2>/dev/null || true)
+
+            n=$(printf '%s\n' "$log" | grep -c '===== Attempt ' || true)
+            attempt_count=$((attempt_count + n))
+
+            c=$(printf '%s\n' "$log" | grep -c 'CAPACITY_UNAVAILABLE' || true)
+            capacity_count=$((capacity_count + c))
+
+            s=$(printf '%s\n' "$log" | grep -c '^.*SUCCESS|' || true)
+            success_count=$((success_count + s))
+
+            v=$(printf '%s\n' "$log" | grep -c '^.*VM_EXISTS|' || true)
+            vm_exists_count=$((vm_exists_count + v))
+          done
+
+          if [ "$success_count" -gt 0 ] || [ "$vm_exists_count" -gt 0 ]; then
+            status="🟢 VM launch/exists detected"
+          else
+            status="🟡 Still waiting for Oracle A1 Flex capacity"
+          fi
+
+          text="📊 Oracle VM Daily Summary%0A%0A"
+          text+="📅 Date: $TODAY (Asia/Dhaka)%0A"
+          text+="🔄 Workflow runs: $run_count%0A"
+          text+="🎯 Total VM launch attempts: $attempt_count%0A"
+          text+="🟡 Capacity-unavailable responses: $capacity_count%0A"
+          text+="🟢 Successful launch detections: $success_count%0A"
+          text+="ℹ️ Existing-VM detections: $vm_exists_count%0A%0A"
+          text+="$status%0A"
+          text+="Schedule: every 5 minutes + 5 attempts per run, 45 seconds apart."
+
+          python - <<'PY'
+          import os, urllib.request
+          url = "https://api.telegram.org/bot" + os.environ["TELEGRAM_BOT_TOKEN"] + "/sendMessage"
+          data = ("chat_id=" + os.environ["TELEGRAM_CHAT_ID"] + "&text=" + os.environ["SUMMARY_TEXT"]).encode()
+          urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20).read()
+          PY
+        shell: bash

@@ -1,0 +1,12 @@
+name: Oracle VM Manual Launch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    uses: ./.github/workflows/try-vm.yml
+    secrets: inherit

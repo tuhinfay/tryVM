@@ -1,6 +1,6 @@
 name: Oracle VM Auto Retry
 
-"on":
+on:
   workflow_dispatch:
   schedule:
     - cron: "0 0,2,4,6,8,10,12,14,16 * * *"
@@ -32,7 +32,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install oci
 
-      - name: Try Oracle VM
+      - name: Oracle VM Auto Retry
         id: vm
         env:
           OCI_REGION: ap-singapore-1
@@ -49,72 +49,105 @@ jobs:
         run: |
           set +e
 
+          MAX_ATTEMPTS=30
+          WAIT_SECONDS=60
           attempts=0
           event=""
-          rc=3
 
-          for i in $(seq 1 30); do
+          echo ""
+          echo "╔══════════════════════════════════════════════════════╗"
+          echo "║        Oracle VM Auto Retry                         ║"
+          echo "║        VM: Tuhinpc-Final-VM                         ║"
+          echo "║        A1 Flex | 1 OCPU | 1 GB | Singapore         ║"
+          echo "╚══════════════════════════════════════════════════════╝"
+          echo ""
+          echo "Maximum attempts : $MAX_ATTEMPTS"
+          echo "Wait between tries: $WAIT_SECONDS seconds"
+          echo "Starting VM capacity check..."
+          echo ""
+
+          for i in $(seq 1 "$MAX_ATTEMPTS"); do
             attempts=$i
 
-            echo ""
-            echo "========================================"
-            echo "Oracle VM Attempt $i/30"
-            echo "========================================"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "🔎 ATTEMPT $i/$MAX_ATTEMPTS"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "⏱️  Checking Oracle A1 Flex capacity..."
 
             python launch_vm.py > vm-result.txt 2>&1
             rc=$?
 
             cat vm-result.txt
-
             event=$(grep -E '^(SUCCESS|VM_EXISTS|CAPACITY_UNAVAILABLE|OCI_ERROR)' vm-result.txt | tail -1 || true)
 
-            echo ""
-            echo "Detected event: $event"
-            echo "Exit code: $rc"
-
             if [ "$rc" -eq 0 ]; then
+              echo ""
+              echo "🟢 SUCCESS"
               echo "VM operation completed successfully."
+              echo "Total attempts: $attempts"
+              echo "Total retries: $((attempts - 1))"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
               break
             fi
 
             if [ "$event" = "CAPACITY_UNAVAILABLE" ]; then
-              if [ "$i" -lt 30 ]; then
+              echo ""
+              echo "🔴 Capacity not available."
+              echo "Attempt: $i/$MAX_ATTEMPTS"
+              echo "Retries used: $((i - 1))"
+              echo "Retries remaining: $((MAX_ATTEMPTS - i))"
+
+              if [ "$i" -lt "$MAX_ATTEMPTS" ]; then
+                echo "⏳ Next attempt in $WAIT_SECONDS seconds..."
                 echo ""
-                echo "Oracle A1 Flex host capacity unavailable."
-                echo "Waiting 60 seconds before attempt $((i + 1))..."
-                sleep 60
+                sleep "$WAIT_SECONDS"
+              else
+                echo ""
+                echo "⚠️  All $MAX_ATTEMPTS attempts completed."
+                echo "❌ Oracle A1 Flex capacity was not available."
+                echo "Total retries: $((MAX_ATTEMPTS - 1))"
               fi
+
               continue
             fi
 
             echo ""
-            echo "Unexpected OCI error."
-            echo "Stopping retry loop."
+            echo "🔴 OCI/API error detected."
+            echo "Stopping retries because this is not a capacity error."
+            echo "Attempts completed: $attempts"
             break
           done
 
           echo "event=$event" >> "$GITHUB_OUTPUT"
           echo "attempts=$attempts" >> "$GITHUB_OUTPUT"
 
-          if [ "$event" = "CAPACITY_UNAVAILABLE" ]; then
-            echo ""
-            echo "========================================"
-            echo "No Oracle A1 Flex capacity found."
-            echo "Attempts completed: $attempts"
-            echo "Workflow will remain GREEN."
-            echo "Next scheduled run will try again."
-            echo "========================================"
-            exit 0
-          fi
+          echo ""
+          echo "════════════════ FINAL RESULT ════════════════"
 
           if [[ "$event" == SUCCESS\|* ]]; then
+            echo "🟢 VM LAUNCH SUCCESSFUL"
+            echo "Attempts: $attempts"
+            echo "Retries: $((attempts - 1))"
             exit 0
           fi
 
           if [ "$event" = "VM_EXISTS" ]; then
+            echo "🟢 VM ALREADY EXISTS"
+            echo "No new VM was created."
             exit 0
           fi
 
+          if [ "$event" = "CAPACITY_UNAVAILABLE" ]; then
+            echo "🟡 NO CAPACITY FOUND"
+            echo "Attempts: $attempts/$MAX_ATTEMPTS"
+            echo "Retries: $((attempts - 1))"
+            echo "Workflow remains GREEN."
+            echo "The next scheduled run will try again."
+            exit 0
+          fi
+
+          echo "🔴 UNEXPECTED OCI ERROR"
+          echo "Event: $event"
           exit "$rc"
 
       - name: Telegram Success Notification
@@ -129,56 +162,21 @@ jobs:
           import urllib.parse
           import urllib.request
 
-          text = f"""🟢 Oracle VM launched successfully!
-
-VM: Tuhinpc-Final-VM
-Region: Singapore
-Shape: VM.Standard.A1.Flex
-OCPU: 1
-RAM: 1 GB
-Attempts: {os.environ.get("ATTEMPTS", "unknown")}"""
-
-          url = (
-              "https://api.telegram.org/bot"
-              + os.environ["TELEGRAM_BOT_TOKEN"]
-              + "/sendMessage"
-          )
-
-          data = urllib.parse.urlencode({
-              "chat_id": os.environ["TELEGRAM_CHAT_ID"],
-              "text": text
-          }).encode()
-
-          urllib.request.urlopen(
-              urllib.request.Request(url, data=data),
-              timeout=20
-          ).read()
-          PY
-
-      - name: Telegram OCI Error Notification
-        if: startsWith(steps.vm.outputs.event, 'OCI_ERROR|')
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          VM_EVENT: ${{ steps.vm.outputs.event }}
-          ATTEMPTS: ${{ steps.vm.outputs.attempts }}
-        run: |
-          python - <<'PY'
-          import os
-          import urllib.parse
-          import urllib.request
-
-          url = (
-              "https://api.telegram.org/bot"
-              + os.environ["TELEGRAM_BOT_TOKEN"]
-              + "/sendMessage"
-          )
-
           text = (
-              "🔴 Oracle VM launch error\n\n"
-              + os.environ["VM_EVENT"]
-              + "\nAttempts: "
-              + os.environ.get("ATTEMPTS", "unknown")
+              "🟢 Oracle VM launched successfully!\n\n"
+              "VM: Tuhinpc-Final-VM\n"
+              "Region: Singapore\n"
+              "Shape: VM.Standard.A1.Flex\n"
+              "OCPU: 1\n"
+              "RAM: 1 GB\n"
+              f"Attempts: {os.environ.get('ATTEMPTS', 'unknown')}\n"
+              f"Retries: {max(int(os.environ.get('ATTEMPTS', '1')) - 1, 0)}"
+          )
+
+          url = (
+              "https://api.telegram.org/bot"
+              + os.environ["TELEGRAM_BOT_TOKEN"]
+              + "/sendMessage"
           )
 
           data = urllib.parse.urlencode({

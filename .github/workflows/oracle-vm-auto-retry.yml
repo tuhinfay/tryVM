@@ -50,8 +50,8 @@ jobs:
           set +e
 
           MAX_ATTEMPTS=30
-          NORMAL_WAIT_MIN=60
-          NORMAL_WAIT_MAX=90
+          NORMAL_WAIT_MIN=100
+          NORMAL_WAIT_MAX=120
           RATE_LIMIT_COOLDOWN=180
           attempts=0
           event=""

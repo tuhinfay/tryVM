@@ -50,7 +50,9 @@ jobs:
           set +e
 
           MAX_ATTEMPTS=30
-          WAIT_SECONDS=60
+          NORMAL_WAIT_MIN=60
+          NORMAL_WAIT_MAX=90
+          RATE_LIMIT_COOLDOWN=180
           attempts=0
           event=""
 
@@ -62,7 +64,8 @@ jobs:
           echo "╚══════════════════════════════════════════════════════╝"
           echo ""
           echo "Maximum attempts : $MAX_ATTEMPTS"
-          echo "Wait between tries: $WAIT_SECONDS seconds"
+          echo "Normal wait      : ${NORMAL_WAIT_MIN}-${NORMAL_WAIT_MAX}s (random jitter)"
+          echo "429 cooldown     : ${RATE_LIMIT_COOLDOWN}s"
           echo "Starting VM capacity check..."
           echo ""
 
@@ -98,7 +101,8 @@ jobs:
               echo "Retries remaining: $((MAX_ATTEMPTS - i))"
 
               if [ "$i" -lt "$MAX_ATTEMPTS" ]; then
-                echo "⏳ Next attempt in $WAIT_SECONDS seconds..."
+                WAIT_SECONDS=$(( NORMAL_WAIT_MIN + RANDOM % (NORMAL_WAIT_MAX - NORMAL_WAIT_MIN + 1) ))
+                echo "⏳ Next attempt in ${WAIT_SECONDS}s (random jitter)..."
                 echo ""
                 sleep "$WAIT_SECONDS"
               else
@@ -109,6 +113,19 @@ jobs:
               fi
 
               continue
+            fi
+
+            if [[ "$event" == OCI_ERROR\|* ]] && grep -qiE '429|TooManyRequests|too many requests|throttl' vm-result.txt; then
+              echo ""
+              echo "🟠 Oracle rate limit detected (HTTP 429 / TooManyRequests)."
+              echo "Attempt: $i/$MAX_ATTEMPTS"
+              echo "Retries used: $((i - 1))"
+              echo "⏸️  Cooling down for ${RATE_LIMIT_COOLDOWN}s before the next attempt..."
+
+              if [ "$i" -lt "$MAX_ATTEMPTS" ]; then
+                sleep "$RATE_LIMIT_COOLDOWN"
+                continue
+              fi
             fi
 
             echo ""
@@ -142,6 +159,15 @@ jobs:
             echo "Attempts: $attempts/$MAX_ATTEMPTS"
             echo "Retries: $((attempts - 1))"
             echo "Workflow remains GREEN."
+            echo "The next scheduled run will try again."
+            exit 0
+          fi
+
+          if [[ "$event" == OCI_ERROR\|* ]] && grep -qiE '429|TooManyRequests|too many requests|throttl' vm-result.txt; then
+            echo "🟠 RATE LIMITED"
+            echo "Attempts: $attempts/$MAX_ATTEMPTS"
+            echo "Retries: $((attempts - 1))"
+            echo "Cooldown was applied after the rate-limit response."
             echo "The next scheduled run will try again."
             exit 0
           fi
